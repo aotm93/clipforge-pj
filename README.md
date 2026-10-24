@@ -1,4 +1,7 @@
 <p align="center"><img src="docs/banner.png" alt="ClipForge — 开源 AI 带货短视频神器，一张商品图自动产出抖音小店/快手/小红书/TikTok Shop 卖货短视频" width="820"/></p>
+> **本仓库说明：** 本项目 fork 自 [xixihhhh/clipforge](https://github.com/xixihhhh/clipforge)。本仓库在上游基础上继续维护，并包含本地开发的新增功能、修复与改进；请以本仓库代码和提交历史为准。
+>
+> **版本管理：** 代码变更通过 Git 提交和远程仓库备份，便于追踪修改并在误删或改动后恢复。请勿提交密钥、个人数据或本地生成产物。
 
 # ClipForge — 开源 AI 带货短视频神器 ｜ 一张商品图，自动出卖货视频
 
