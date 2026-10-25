@@ -81,9 +81,9 @@ export const QC_PARAMS = {
 /** Expected pixel dimensions for a composition's resolution + aspect ratio (must match the composer). */
 export function expectedDimensions(resolution?: string | null, aspectRatio?: string | null): { width: number; height: number } | null {
   const map: Record<string, Record<string, { width: number; height: number }>> = {
-    "9:16": { "720p": { width: 720, height: 1280 }, "1080p": { width: 1080, height: 1920 } },
-    "16:9": { "720p": { width: 1280, height: 720 }, "1080p": { width: 1920, height: 1080 } },
-    "1:1": { "720p": { width: 720, height: 720 }, "1080p": { width: 1080, height: 1080 } },
+    "9:16": { "720p": { width: 720, height: 1280 }, "768p": { width: 768, height: 1365 }, "1080p": { width: 1080, height: 1920 } },
+    "16:9": { "720p": { width: 1280, height: 720 }, "768p": { width: 1365, height: 768 }, "1080p": { width: 1920, height: 1080 } },
+    "1:1": { "720p": { width: 720, height: 720 }, "768p": { width: 768, height: 768 }, "1080p": { width: 1080, height: 1080 } },
   };
   if (!resolution || !aspectRatio) return null;
   return map[aspectRatio]?.[resolution] ?? null;

@@ -1,5 +1,6 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { createJSONStorage, persist } from "zustand/middleware";
+import { createSqliteStorage } from "@/lib/sqlite-storage";
 
 // product entry
 export interface ProductItem {
@@ -56,25 +57,11 @@ export const useProductLibraryStore = create<ProductLibraryState>()(
     }),
     {
       name: "daihuo-jianshou-products",
-      // JSON serialization converts Date to string; restore it when reading back
-      storage: {
-        getItem: (name) => {
-          const str = localStorage.getItem(name);
-          if (!str) return null;
-          const parsed = JSON.parse(str);
-          if (parsed?.state?.products) {
-            parsed.state.products = parsed.state.products.map(
-              (p: Record<string, unknown>) => ({
-                ...p,
-                createdAt: new Date(p.createdAt as string),
-              })
-            );
-          }
-          return parsed;
-        },
-        setItem: (name, value) => localStorage.setItem(name, JSON.stringify(value)),
-        removeItem: (name) => localStorage.removeItem(name),
-      },
+      // Restore Date values after JSON serialization from either SQLite or the browser fallback.
+      storage: createJSONStorage(() => createSqliteStorage("daihuo-jianshou-products"), {
+        reviver: (key, value) =>
+          key === "createdAt" && typeof value === "string" ? new Date(value) : value,
+      }),
     }
   )
 );

@@ -87,6 +87,10 @@ function referenceSibling(modelId: string): string | undefined {
 
 function referenceCapabilities(modelId: string, provider?: string): Pick<VideoModelCapabilities, "referenceImages" | "referenceVideo" | "referenceAudio" | "maxReferenceImages"> {
   const sibling = referenceSibling(modelId);
+  const vgenvH3 = provider === "vgenv" || /^(?:base|cinematic|origin)$/.test(modelId) || /(?:hailuo-h3|minimax-h3)/i.test(modelId);
+  if (vgenvH3) {
+    return { referenceImages: true, referenceVideo: true, referenceAudio: true, maxReferenceImages: 9 };
+  }
   const spec = sibling ? getVideoParamSpec(sibling) : undefined;
   const arkMultimodal = provider === "volcengine" && /seedance|doubao/i.test(modelId);
   const referenceKnown = Boolean(sibling || spec?.referenceShape || arkMultimodal);
@@ -122,6 +126,28 @@ export function getVideoModelCapabilities(modelId: string, supportsAudio?: boole
   const spec = getVideoParamSpec(modelId);
   const modes = inferredModes(modelId);
   const references = referenceCapabilities(modelId, provider);
+  const knownH3 = provider === "vgenv" || /^(?:base|cinematic|origin)$/.test(modelId) || /(?:hailuo-h3|minimax-h3)/i.test(modelId);
+  if (knownH3) {
+    return {
+      confidence: "known",
+      textToVideo: true,
+      imageToVideo: true,
+      referenceImages: true,
+      referenceVideo: true,
+      referenceAudio: true,
+      lastFrame: true,
+      nativeAudio: supportsAudio ?? true,
+      videoEdit: false,
+      temporalRetake: false,
+      regionMask: false,
+      multiKeyframes: false,
+      performanceReference: true,
+      durationValues: Array.from({ length: 12 }, (_, index) => index + 4),
+      resolutionValues: ["480p", "768p"],
+      aspectRatioValues: ["16:9", "9:16", "1:1"],
+      maxReferenceImages: 9,
+    };
+  }
   if (!spec) {
     const hasInference = Object.values(modes).some((value) => value !== null);
     const advanced = advancedCapabilities(modelId, references.referenceVideo, references.referenceImages, provider);

@@ -15,6 +15,14 @@ import type {
   MediaType,
   TaskStatusEnum,
 } from './types'
+const MAX_RETRY_AFTER_MS = 30_000;
+function retryAfterMilliseconds(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(MAX_RETRY_AFTER_MS, seconds * 1000);
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? Math.min(MAX_RETRY_AFTER_MS, Math.max(0, timestamp - Date.now())) : undefined;
+}
 
 /** API request error */
 export class ProviderError extends Error {
@@ -126,7 +134,7 @@ export abstract class BaseProvider implements AIProvider {
               this.name,
               response.status
             )
-            await this.sleep(500 * Math.pow(2, attempt))
+            await this.sleep(retryAfterMilliseconds(response.headers.get('Retry-After')) ?? 500 * Math.pow(2, attempt))
             continue
           }
           throw new ProviderError(

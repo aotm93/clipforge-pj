@@ -38,8 +38,12 @@ export const settings: NamespaceMessages = {
     providerAlibabaTip: "万相系列，商品图生视频效果佳",
     providerSiliconflowDesc: "国产 AI 推理平台，提供高性价比的模型推理服务",
     providerSiliconflowTip: "国产高性价比推理平台",
+    providerCompatibleMediaDesc: "OpenAI 兼容第三方媒体平台，支持图片和异步视频任务",
+    providerCompatibleMediaTip: "可填写自建或代理 baseUrl，Key 与自定义模型共用",
     providerOpenaiDesc: "OpenAI 官方平台，支持 gpt-image-2、gpt-image-1.5 图片生成与图生图编辑",
     providerOpenaiTip: "2026 旗舰 gpt-image-2，9:16 竖屏直出 + 商品保真图生图（暂不支持视频）",
+    providerVgenvDesc: "通过 vgenv 接入 MiniMax H3 视频生成，默认使用 Base 模型",
+    providerVgenvTip: "可选 Cinematic；Origin 模型需要账号授权。此接入使用 v3 API。",
 
     // AI 平台卡片
     providerEnabled: "已启用",
@@ -235,8 +239,12 @@ export const settings: NamespaceMessages = {
     providerAlibabaTip: "Wanxiang series, great for product image-to-video",
     providerSiliconflowDesc: "Homegrown AI inference platform with cost-effective model inference",
     providerSiliconflowTip: "Cost-effective domestic inference platform",
+    providerCompatibleMediaDesc: "OpenAI-compatible media platform for images and async videos",
+    providerCompatibleMediaTip: "Supports custom or proxied base URLs; the key is reused by custom models",
     providerOpenaiDesc: "OpenAI's official platform — gpt-image-2 and gpt-image-1.5 image generation and editing",
     providerOpenaiTip: "2026 flagship gpt-image-2: native 9:16 + product-faithful editing (no video yet)",
+    providerVgenvDesc: "Generate MiniMax H3 videos through vgenv, with Base as the default model",
+    providerVgenvTip: "Cinematic is optional; Origin requires account authorization. Uses the v3 API.",
 
     // AI platform card
     providerEnabled: "Enabled",

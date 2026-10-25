@@ -34,9 +34,12 @@ import { ModelPicker } from "@/components/settings/model-picker";
 import { GenerationSettings } from "@/components/generation-settings";
 import { PresenterManager } from "@/components/presenter-manager";
 
+import type { GenResolution } from "@/lib/gen-params";
 // default resolution options
 const resolutionOptions = [
+  { value: "480p", label: "480p (854x480)" },
   { value: "720p", label: "720p (1280x720)" },
+  { value: "768p", label: "768p (1365x768)" },
   { value: "1080p", label: "1080p (1920x1080)" },
 ];
 
@@ -159,6 +162,32 @@ const AI_PROVIDERS = [
       </svg>
     ),
     iconBg: "from-teal-600 to-green-700",
+  },
+  {
+    key: "openai-compatible-media",
+    name: "OpenAI 兼容第三方媒体",
+    descKey: "providerCompatibleMediaDesc",
+    tipKey: "providerCompatibleMediaTip",
+    icon: (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M4 5h16v14H4z" />
+        <path d="m10 9 5 3-5 3z" />
+      </svg>
+    ),
+    iconBg: "from-cyan-500 to-blue-600",
+  },
+  {
+    key: "vgenv",
+    name: "MiniMax (vgenv)",
+    descKey: "providerVgenvDesc",
+    tipKey: "providerVgenvTip",
+    icon: (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M4 5h16v14H4z" />
+        <path d="m10 9 5 3-5 3z" />
+      </svg>
+    ),
+    iconBg: "from-rose-500 to-orange-500",
   },
 ];
 
@@ -579,7 +608,7 @@ export default function SettingsPage() {
                       </div>
 
                       {/* custom endpoint (proxy/self-hosted, optional) — collapsed by default so beginners are not disturbed */}
-                      <details className="mt-3">
+                      <details className="mt-3" open={platform.key === "openai-compatible-media"}>
                         <summary className="text-xs text-muted-foreground/70 cursor-pointer list-none select-none hover:text-muted-foreground">
                           {t("providerBaseUrlLabel")}
                         </summary>
@@ -592,7 +621,7 @@ export default function SettingsPage() {
                                 baseUrl: e.target.value || undefined,
                               })
                             }
-                            placeholder={t("providerBaseUrlPlaceholder")}
+                            placeholder={platform.key === "openai-compatible-media" ? "https://api.lk888.ai/v1" : t("providerBaseUrlPlaceholder")}
                             className="font-mono text-xs"
                           />
                         </div>
@@ -1010,7 +1039,7 @@ export default function SettingsPage() {
                       <Select
                         value={defaultResolution}
                         onValueChange={(val) =>
-                          setDefaultResolution(val as "720p" | "1080p")
+                          setDefaultResolution(val as GenResolution)
                         }
                       >
                         <SelectTrigger className="w-full">

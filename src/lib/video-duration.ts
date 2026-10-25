@@ -1,6 +1,7 @@
 import { getVideoParamSpec } from "@/lib/providers/atlas-video-params";
 
 export const DEFAULT_VIDEO_MAX_SECONDS = 15;
+const H3_V3_MODEL_RE = /^(?:base|cinematic|origin)$|(?:hailuo-h3|minimax-h3)/i;
 
 /** A custom limit can reduce a documented limit, but cannot enlarge it. */
 export function videoMaxSeconds(modelId: string, configured?: number): number {
@@ -8,7 +9,7 @@ export function videoMaxSeconds(modelId: string, configured?: number): number {
     throw new Error("模型单次最大时长必须是 4–120 秒之间的整数");
   }
   const values = getVideoParamSpec(modelId)?.durationEnum;
-  const documented = values?.length ? Math.max(...values) : undefined;
+  const documented = values?.length ? Math.max(...values) : H3_V3_MODEL_RE.test(modelId) ? DEFAULT_VIDEO_MAX_SECONDS : undefined;
   const ceiling = Math.min(documented ?? configured ?? DEFAULT_VIDEO_MAX_SECONDS, configured ?? Infinity);
   const allowed = values?.filter((value) => value <= ceiling);
   if (allowed && !allowed.length) throw new Error("设置的最大时长低于模型支持的最短时长");

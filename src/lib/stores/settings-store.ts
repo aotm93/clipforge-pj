@@ -1,5 +1,6 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { createJSONStorage, persist } from "zustand/middleware";
+import { createSqliteStorage } from "@/lib/sqlite-storage";
 import { DEFAULT_LOCALE, type Locale } from "@/lib/i18n/config";
 import { DEFAULT_TTS_PROVIDER, type TTSProvider } from "@/lib/tts-presets";
 import {
@@ -8,6 +9,7 @@ import {
   type CustomModel,
   type ImageGenParams,
   type VideoGenParams,
+  type GenResolution,
 } from "@/lib/gen-params";
 import { ATLAS_BASE_URL, ATLAS_LLM_BASE_URL, ATLAS_ONEKEY_MODELS, fillAtlasModelDefaults } from "@/lib/atlas-onekey";
 import type { MotionIntensity, MotionRealismTier } from "@/lib/motion-prompt";
@@ -59,7 +61,7 @@ export interface SettingsState {
   // 默认生视频模型
   defaultVideoModel: string;
   // 默认分辨率
-  defaultResolution: "720p" | "1080p";
+  defaultResolution: GenResolution;
   /** Refuse a single paid generation whose estimate exceeds this many USD (0 = no cap) */
   spendCapUsd: number;
   // 默认画面比例
@@ -97,7 +99,7 @@ export interface SettingsState {
   setTTS: (tts: TTSSetting) => void;
   setDefaultImageModel: (model: string) => void;
   setDefaultVideoModel: (model: string) => void;
-  setDefaultResolution: (resolution: "720p" | "1080p") => void;
+  setDefaultResolution: (resolution: GenResolution) => void;
   setSpendCapUsd: (usd: number) => void;
   setDefaultAspectRatio: (ratio: "9:16" | "16:9" | "1:1") => void;
   addCustomModel: (model: CustomModel) => void;
@@ -162,6 +164,22 @@ export function migrateSettings(state: SettingsState): SettingsState {
 
     llm.baseUrl = llm.baseUrl.replace(/^(https?:\/\/)localhost(:11434\b)/i, "$1127.0.0.1$2");
   }
+  const providers = (state.providers ?? {}) as Record<string, ProviderSetting | undefined>;
+  state.providers = {
+    ...providers,
+    vgenv: providers.vgenv ?? { enabled: false, apiKey: "" },
+    "openai-compatible-media": providers["openai-compatible-media"] ?? { enabled: false, apiKey: "" },
+  };
+  if (Array.isArray(state.customModels)) {
+    state.customModels = state.customModels.map((model) => {
+      const sanitized = { ...model };
+      const maxDurationSeconds = sanitized.maxDurationSeconds;
+      if (typeof maxDurationSeconds !== "number" || !Number.isInteger(maxDurationSeconds) || maxDurationSeconds < 4 || maxDurationSeconds > 120) {
+        delete sanitized.maxDurationSeconds;
+      }
+      return sanitized;
+    });
+  }
   if (!isProductionProfileId(state?.activeProductionProfile)) {
     state.activeProductionProfile = "balanced";
   }
@@ -179,6 +197,8 @@ export const useSettingsStore = create<SettingsState>()(
         alibaba: { enabled: false, apiKey: "" },
         siliconflow: { enabled: false, apiKey: "" },
         openai: { enabled: false, apiKey: "" },
+        vgenv: { enabled: false, apiKey: "" },
+        "openai-compatible-media": { enabled: false, apiKey: "" },
       },
       llm: {
         provider: "",
@@ -198,7 +218,7 @@ export const useSettingsStore = create<SettingsState>()(
       },
       defaultImageModel: "",
       defaultVideoModel: "",
-      defaultResolution: "720p",
+      defaultResolution: "768p",
       // a per-run ceiling, on by default: an unattended run used to be able to spend
       // whatever the model charged, with no figure shown beforehand (issue #28)
       spendCapUsd: 5,
@@ -275,6 +295,7 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: "daihuo-jianshou-settings",
+      storage: createJSONStorage(() => createSqliteStorage("daihuo-jianshou-settings")),
       // v1：清洗历史版本预设写入的失效模型名（旧预设填过不存在的模型 ID，"测试连接"只验 Key
       // 不验模型名所以一直显示正常，直到生成脚本才报 Model Not Exist——issue #12 用户即此场景）。
       // 只在 baseUrl 匹配对应官方端点时改写，避免误伤自建代理上的同名自定义模型。
@@ -283,7 +304,7 @@ export const useSettingsStore = create<SettingsState>()(
       // v4：补充面向创作目标的生产方案；旧设置迁移到兼顾质量与成本的 balanced。
       // v5：Atlas 一键接入曾把「素材网关」/api/v1 写进 LLM 地址，导致写脚本必 404（issue #24），
       // 迁到 OpenAI 兼容的聊天网关 /v1。
-      version: 5,
+      version: 6,
       migrate: (persisted) => migrateSettings(persisted as SettingsState),
     }
   )

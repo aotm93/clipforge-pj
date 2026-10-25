@@ -1,5 +1,6 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { createJSONStorage, persist } from "zustand/middleware";
+import { createSqliteStorage } from "@/lib/sqlite-storage";
 import type { Shot, CharacterVoiceProfile } from "@/lib/db/schema";
 
 // ==================== Character ====================
@@ -133,6 +134,9 @@ export const useCharacterStore = create<CharacterState>()(
           ),
         })),
     }),
-    { name: "daihuo-jianshou-characters" }
+    {
+      name: "daihuo-jianshou-characters",
+      storage: createJSONStorage(() => createSqliteStorage("daihuo-jianshou-characters")),
+    }
   )
 );

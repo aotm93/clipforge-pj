@@ -27,6 +27,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { Shot } from "@/lib/db/schema";
+import type { GenResolution } from "@/lib/gen-params";
 
 // 视频片段
 interface VideoClipItem {
@@ -47,7 +48,7 @@ interface ComposeConfig {
   subtitleSize: number;
   subtitlePosition: "bottom" | "center" | "top";
   aspectRatio: "9:16" | "16:9" | "1:1";
-  resolution: "720p" | "1080p";
+  resolution: GenResolution;
   /** 渲染质量预设：快速/标准/高清（决定分辨率 + 编码速度/质量） */
   renderPreset: RenderPreset;
   /** 带货：片尾购买 CTA 贴片 */

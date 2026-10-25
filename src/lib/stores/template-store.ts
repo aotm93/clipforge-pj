@@ -1,5 +1,6 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { createJSONStorage, persist } from "zustand/middleware";
+import { createSqliteStorage } from "@/lib/sqlite-storage";
 import type { Shot } from "@/lib/db/schema";
 
 /** Script template */
@@ -62,25 +63,10 @@ export const useTemplateStore = create<TemplateState>()(
     }),
     {
       name: "daihuo-jianshou-templates",
-      // JSON serialization converts Date to string; restore it when reading back
-      storage: {
-        getItem: (name) => {
-          const str = localStorage.getItem(name);
-          if (!str) return null;
-          const parsed = JSON.parse(str);
-          if (parsed?.state?.templates) {
-            parsed.state.templates = parsed.state.templates.map(
-              (t: Record<string, unknown>) => ({
-                ...t,
-                createdAt: new Date(t.createdAt as string),
-              })
-            );
-          }
-          return parsed;
-        },
-        setItem: (name, value) => localStorage.setItem(name, JSON.stringify(value)),
-        removeItem: (name) => localStorage.removeItem(name),
-      },
+      storage: createJSONStorage(() => createSqliteStorage("daihuo-jianshou-templates"), {
+        reviver: (key, value) =>
+          key === "createdAt" && typeof value === "string" ? new Date(value) : value,
+      }),
     }
   )
 );

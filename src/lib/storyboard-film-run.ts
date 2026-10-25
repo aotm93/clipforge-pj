@@ -7,6 +7,7 @@ import type { VideoOptions, AIProvider } from "@/lib/providers/types";
 import { ProviderError } from "@/lib/providers/base";
 import { recordAiTask, updateAiTask } from "@/lib/ai-tasks";
 import { extractLastFrame } from "@/lib/video-composer/frame-extract";
+import { extractFrameAtTime } from "@/lib/video-composer/frame-extract";
 import { probeMedia } from "@/lib/media-probe";
 
 export type FilmSegmentState = "queued" | "submitting" | "polling" | "unknown" | "failed" | "completed";
@@ -112,9 +113,31 @@ async function cacheSegment(run: FilmRun, index: number) {
     await saveFilmRun(run);
   }
   if (!segment.tailFrame && index + 1 < run.segments.length) {
-    const frame = await extractLastFrame(path);
-    if (!frame) throw new Error(`分段 ${index + 1} 末帧提取失败；可恢复，无需重新生成`);
-    segment.tailFrame = `data:image/jpeg;base64,${(await readFile(frame)).toString("base64")}`;
+    let extracted: string | undefined;
+    try {
+      extracted = await extractLastFrame(path);
+      if (extracted) {
+        segment.tailFrame = `data:image/jpeg;base64,${(await readFile(extracted)).toString("base64")}`;
+      }
+    } catch {
+      extracted = undefined;
+    }
+    if (!extracted) {
+      const media = await probeMedia(path).catch(() => undefined);
+      if (media?.duration) extracted = await extractFrameAtTime(path, Math.max(0, media.duration - 0.05), `${path}.continuity.jpg`);
+      if (extracted) segment.tailFrame = `data:image/jpeg;base64,${(await readFile(extracted)).toString("base64")}`;
+    }
+    if (!extracted || !segment.tailFrame) {
+      const fallback = segment.options.referenceImageUrls?.at(-1);
+      if (!fallback) {
+        segment.state = "unknown";
+        segment.error = `分段 ${index + 1} 末帧提取失败，且没有可用的衔接参考图`;
+        await saveFilmRun(run);
+        throw new Error(`${segment.error}；可恢复，无需重新生成`);
+      }
+      segment.tailFrame = fallback;
+      if (!run.warnings.includes(`segment-${index + 1}-tail-frame-fallback`)) run.warnings.push(`segment-${index + 1}-tail-frame-fallback`);
+    }
     await saveFilmRun(run);
   }
 }

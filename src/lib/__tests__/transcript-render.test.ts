@@ -27,7 +27,8 @@ describe("transcript render invocation", () => {
       duration: 3,
     });
     expect(invocation.filterComplex).toContain("[v0][a0][v1][a1]concat=n=2:v=1:a=1[vcat][acat]");
-    expect(invocation.filterComplex).toContain("[vbase]subtitles=/tmp/caption.ass:fontsdir=/tmp/fonts[vout]");
+    expect(invocation.filterComplex).toContain("[vbase]subtitles='/tmp/caption.ass':fontsdir='/tmp/fonts'[vout]");
+    expect(buildTranscriptRenderInvocation({ inputPath: "C:/work/project with spaces/source.mp4", outputPath: "/out.mp4", keepRanges: [{ start: 0, end: 1 }], hasAudio: false, subtitlePath: "C:/Users/DJS Tech/data/output/project/transcript subtitles.ass", fontDirectory: "C:/Program Files/fonts", duration: 1 }).filterComplex).toContain("subtitles='C\\:/Users/DJS Tech/data/output/project/transcript subtitles.ass':fontsdir='C\\:/Program Files/fonts'");
     expect(invocation.outputArgs).toContain("[acat]");
     expect(invocation.outputArgs.at(-1)).toBe("/output.mp4");
   });

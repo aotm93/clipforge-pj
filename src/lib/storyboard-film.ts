@@ -15,10 +15,16 @@ import type { Shot, ScriptCharacter } from "@/lib/db/schema";
 import { stripPauseMarks } from "@/lib/voice-markup";
 import { getVideoParamSpec } from "@/lib/providers/atlas-video-params";
 
+import { videoMaxSeconds } from "@/lib/video-duration";
 /** Seedance 2.5 duration bounds (schema: integer 4-30 seconds) */
 export const FILM_MIN_SECONDS = 4;
 export const FILM_MAX_SECONDS = 30;
 
+/** A bounded group of intact shots submitted as one film task. */
+export interface FilmSegment {
+  shots: Shot[];
+  seconds: number;
+}
 /** Shot-type labels for segment lines, zh/en */
 const SHOT_TYPE_LABELS: Record<string, { zh: string; en: string }> = {
   hook: { zh: "钩子镜", en: "hook shot" },
@@ -55,9 +61,10 @@ export interface FilmModelChoice {
  * swap — the pass genuinely cannot run without references — but `swappedFrom` makes it
  * reportable, so callers can show it and take consent before any money moves.
  */
-export function resolveFilmModel(configured?: string | null): FilmModelChoice {
+export function resolveFilmModel(configured?: string | null, provider?: string): FilmModelChoice {
   const model = configured?.trim();
-  if (model && model.includes("/reference-to-video")) return { model };
+  if (provider === "vgenv") return { model: model || "base" };
+  if (model && (model.includes("/reference-to-video") || provider === "vgenv" || provider === "openai-compatible-media" || provider === "custom")) return { model };
   return { model: FILM_FALLBACK_MODEL, ...(model ? { swappedFrom: model } : {}) };
 }
 
@@ -94,6 +101,33 @@ export function filmDurationFit(shots: Shot[], modelId?: string | null): FilmDur
     cap,
     overflow: scriptSeconds > cap,
   };
+}
+/** Split a film into intact consecutive shot groups that fit one provider task. */
+export function splitFilmShots(shots: Shot[], maximumSeconds = FILM_MAX_SECONDS, modelId?: string | null): FilmSegment[] {
+  const cap = modelId ? Math.min(maximumSeconds, videoMaxSeconds(modelId, maximumSeconds)) : maximumSeconds;
+  if (!Number.isFinite(cap) || cap < FILM_MIN_SECONDS) throw new Error("分段时长上限必须至少为 4 秒");
+  const segments: FilmSegment[] = [];
+  let current: Shot[] = [];
+  let currentSeconds = 0;
+  for (const shot of shots) {
+    const seconds = Number.isFinite(shot.duration) ? shot.duration : 0;
+    if (seconds > cap) throw new Error(`分镜 ${shot.shotId} 时长 ${seconds} 秒超过模型单次上限 ${cap} 秒`);
+    if (current.length && currentSeconds + seconds > cap) {
+      segments.push({ shots: current, seconds: Math.round(currentSeconds) });
+      current = [];
+      currentSeconds = 0;
+    }
+    current.push(shot);
+    currentSeconds += seconds;
+  }
+  if (current.length) segments.push({ shots: current, seconds: Math.round(currentSeconds) });
+  return segments;
+}
+
+/** Match only the generated clip whose filename explicitly names this original shot. */
+export function isStoryboardFilmShot(url: string, shotId: number): boolean {
+  const escaped = String(shotId).replace(/[.*+?^${}()|[\\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|[/\\\\_])shot_${escaped}\\.mp4(?:$|[?#])`).test(url);
 }
 
 export interface FilmSpendEstimate {

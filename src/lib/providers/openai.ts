@@ -144,20 +144,31 @@ export class OpenAIProvider extends BaseProvider {
     if (model.startsWith('dall-e-3')) {
       throw new ProviderError('DALL·E 3 不支持图生图（图片编辑），请改用 gpt-image-1', 'NOT_SUPPORTED', this.name)
     }
-    if (!options.referenceImageUrl) {
+
+    // The storyboard grid sends multi-reference edits through the plural field.
+    // Keep the singular field for older callers and normalize both shapes here.
+    const references = options.referenceImageUrls?.filter(Boolean) ?? []
+    if (options.referenceImageUrl && !references.includes(options.referenceImageUrl)) {
+      references.unshift(options.referenceImageUrl)
+    }
+    if (references.length === 0) {
       throw new ProviderError('图生图缺少参考图', 'BAD_REFERENCE', this.name)
     }
 
     const isDalle2 = model.startsWith('dall-e-2')
-    const { blob, filename } = await this.fetchReferenceImage(options.referenceImageUrl)
+    const referenceImages = isDalle2 ? references.slice(0, 1) : references
 
     const form = new FormData()
     form.append('model', model)
     form.append('prompt', options.prompt)
     form.append('n', String(isDalle2 ? 1 : (options.count ?? 1)))
     form.append('size', this.pickSize(model, options.width, options.height))
-    // gpt-image-* 用数组字段 image[]；dall-e-2 用单字段 image
-    form.append(isDalle2 ? 'image' : 'image[]', blob, filename)
+    // gpt-image-* accepts repeated image[] fields for multi-reference edits;
+    // dall-e-2 accepts one image field only.
+    for (const reference of referenceImages) {
+      const { blob, filename } = await this.fetchReferenceImage(reference)
+      form.append(isDalle2 ? 'image' : 'image[]', blob, filename)
+    }
     // 仅 dall-e-2 支持 response_format；gpt-image-* 恒返回 b64_json
     if (isDalle2) form.append('response_format', 'url')
 

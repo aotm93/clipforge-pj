@@ -89,12 +89,17 @@ describe("local material lifecycle", () => {
     });
     expect(results[1].id).toBe(unrelated.material.name);
   });
-  it("ignores directories, symlinks, temporary files and extracted frame helpers", async () => {
+  it("ignores directories, symlinks when supported, temporary files and extracted frame helpers", async () => {
     await writeFile(join(directory, "legacy.png"), "legacy");
     await writeFile(join(directory, "movie.mp4.last.jpg"), "frame");
     await writeFile(join(directory, ".upload.part"), "partial");
     await mkdir(join(directory, "folder.png"));
-    await symlink(join(directory, "legacy.png"), join(directory, "linked.png"));
+    try {
+      await symlink(join(directory, "legacy.png"), join(directory, "linked.png"), process.platform === "win32" ? "file" : undefined);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (process.platform !== "win32" || (code !== "EPERM" && code !== "EACCES")) throw error;
+    }
     const rows = await listLocalMaterials(directory);
     expect(rows.map((r) => r.name)).toEqual(["legacy.png"]);
     expect(rows[0]).toMatchObject({

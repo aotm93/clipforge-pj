@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { OpenAICompatibleMediaProvider } from "../providers/openai-compatible-media";
 
+import { createProvider } from "../providers";
 const provider = () => new OpenAICompatibleMediaProvider({
   name: "openai-compatible-media",
   apiKey: "test-key",
@@ -10,6 +11,9 @@ const provider = () => new OpenAICompatibleMediaProvider({
 afterEach(() => vi.restoreAllMocks());
 
 describe("OpenAICompatibleMediaProvider", () => {
+  it("is available through the provider registry", () => {
+    expect(createProvider({ name: "openai-compatible-media", apiKey: "test-key", baseUrl: "" })).toBeInstanceOf(OpenAICompatibleMediaProvider);
+  });
   it("submits the third-party async media request with reference images", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(
       JSON.stringify({ task_id: 123 }),

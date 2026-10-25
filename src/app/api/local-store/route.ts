@@ -7,6 +7,8 @@ const ALLOWED_KEYS = new Set([
   "daihuo-jianshou-settings",
   "daihuo-jianshou-brand",
   "daihuo-jianshou-characters",
+  "daihuo-jianshou-products",
+  "daihuo-jianshou-templates",
 ]);
 
 function readKey(request: NextRequest): string | null {

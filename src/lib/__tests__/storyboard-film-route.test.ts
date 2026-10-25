@@ -6,10 +6,12 @@ import { join } from "path";
 import { execFileSync } from "child_process";
 import { NextRequest } from "next/server";
 import type { Shot } from "@/lib/db/schema";
+
 import { scripts } from "@/lib/db/schema";
 import { ffmpegBin } from "@/lib/ffmpeg-path";
 import { probeMedia } from "@/lib/media-probe";
 import { getVideoModelCapabilities } from "@/lib/model-capabilities";
+import { splitFilmShots } from "@/lib/storyboard-film";
 
 const state = vi.hoisted(() => ({
   directory: "", script: null as unknown,
@@ -90,10 +92,18 @@ describe("storyboard film generation", () => {
     const response = await request({ dryRun: true });
     expect(response.status).toBe(200);
     const data = await response.json();
-    expect(data).toMatchObject({ model, seconds: 30, segmentCount: 2, segmentSeconds: [15, 15], referenceImages: 2, estimate: { seconds: 30, maxUsd: 6 } });
-    expect(data.prompt).toContain("画面1");
-    expect(data.prompt).toContain("画面2");
+    expect(data).toMatchObject({ model, seconds: 30, segmentCount: 2, segmentSeconds: [15, 15], referenceImages: 1, estimate: { seconds: 30, maxUsd: 6 } });
+    expect(data.prompts[0]).toContain("画面1");
+    expect(data.prompts[1]).toContain("画面2");
     expect(state.submit).not.toHaveBeenCalled();
+  });
+
+
+  it("uses the configured custom-model limit when planning film segments", async () => {
+    setShots([shot(1, 8), shot(2, 8)]);
+    const response = await request({ dryRun: true, options: { maxDurationSeconds: 10 } });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ modelMaxSeconds: 10, segmentSeconds: [8, 8] });
   });
 
   it("groups seven unequal original shots into two near-15-second tasks and saves clips by original shot ID", async () => {
@@ -125,7 +135,7 @@ describe("storyboard film generation", () => {
     ] });
     expect(state.submit).toHaveBeenCalledTimes(2);
     expect(state.submit.mock.calls[0][0]).toMatchObject({ modelId: model, duration: 15, referenceImageUrls: ["https://media.example.test/presenter.png", state.assets[0].filePath] });
-    expect(state.submit.mock.calls[1][0]).toMatchObject({ modelId: model, duration: 15, referenceImageUrls: ["https://media.example.test/presenter.png", state.assets[1].filePath, expect.stringMatching(/^data:image\/jpeg;base64,/)] });
+    expect(state.submit.mock.calls[1][0]).toMatchObject({ modelId: model, duration: 15, referenceImageUrls: ["https://media.example.test/presenter.png", state.assets[1].filePath, expect.stringMatching(/^(?:data:image\/jpeg;base64,|https:\/\/media\.example\.test\/shot-)/)] });
     expect(state.record.mock.invocationCallOrder[0]).toBeLessThan(state.wait.mock.invocationCallOrder[0]);
     expect(state.record.mock.invocationCallOrder[1]).toBeLessThan(state.wait.mock.invocationCallOrder[1]);
     expect(state.update).toHaveBeenCalledWith("row-2", expect.objectContaining({ status: "completed" }));
@@ -173,7 +183,7 @@ describe("storyboard film generation", () => {
     expect(result.taskIds).toEqual(["paid-1", "paid-2"]);
     expect(state.submit).toHaveBeenCalledTimes(2);
     expect(state.wait).toHaveBeenCalledTimes(3);
-    expect(state.submit.mock.calls[1][0].referenceImageUrls.at(-1)).toMatch(/^data:image\/jpeg;base64,/);
+    expect(state.submit.mock.calls[1][0].referenceImageUrls.at(-1)).toMatch(/^(?:data:image\/jpeg;base64,|https:\/\/media\.example\.test\/shot-)/);
     expect(result.url).toContain("/api/output/project-a/film_");
   }, 30_000);
 

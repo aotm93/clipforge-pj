@@ -4,27 +4,47 @@ import { join } from "path";
 import { getDataDir } from "@/lib/paths";
 import { getDb } from "@/lib/db";
 import { scripts, assets, compositions } from "@/lib/db/schema";
+import type { Shot } from "@/lib/db/schema";
 import { and, eq } from "drizzle-orm";
 import { createProvider } from "@/lib/providers";
-import { ProviderError } from "@/lib/providers/base";
+
 import { GRID_MAX_SHOTS } from "@/lib/storyboard-grid";
+import { getVideoModelCapabilities } from "@/lib/model-capabilities";
 import {
   buildStoryboardFilmPrompt,
   dialogueDensityWarnings,
   filmTotalSeconds,
   filmDurationFit,
+  splitFilmShots,
   referenceQuotaCheck,
   resolveFilmModel,
   estimateFilmSpend,
   parseUnitUsd,
-  FILM_MAX_SECONDS,
 } from "@/lib/storyboard-film";
+import { videoMaxSeconds } from "@/lib/video-duration";
+import { ffmpegBin } from "@/lib/ffmpeg-path";
+import { execFile } from "child_process";
+import { promisify } from "util";
+import { randomUUID } from "crypto";
+import {
+  executeFilmRun,
+
+  loadFilmRun,
+  saveFilmRun,
+  filmRunSummary,
+  withFilmRunLock,
+  type FilmRun,
+} from "@/lib/storyboard-film-run";
+
+
 import { fetchAtlasCatalog, getCachedAtlasEntry } from "@/lib/providers/atlas-catalog";
 import { ATLAS_BASE_URL } from "@/lib/atlas-onekey";
 import { toRemoteUsableImage } from "@/lib/remote-image";
 import { probeMedia } from "@/lib/media-probe";
-import { recordAiTask, updateAiTask } from "@/lib/ai-tasks";
+
 import { apiError, errText } from "@/lib/api-error";
+
+const execFileAsync = promisify(execFile);
 
 const IMAGE_EXT_RE = /\.(png|jpe?g|webp|bmp|gif)$/i;
 
@@ -34,6 +54,72 @@ function shotKeyframe(asset: { filePath?: string | null; thumbnailPath?: string 
   if (asset.filePath && IMAGE_EXT_RE.test(asset.filePath)) return asset.filePath;
   if (asset.thumbnailPath && IMAGE_EXT_RE.test(asset.thumbnailPath)) return asset.thumbnailPath;
   return undefined;
+}
+async function finalizeFilmRun(run: FilmRun): Promise<Record<string, unknown>> {
+  const outputDir = join(getDataDir(), "output", run.projectId);
+  await mkdir(outputDir, { recursive: true });
+  const shotPaths: string[] = [];
+  const shotSummaries: Array<{ shotIds: number[]; timelineSeconds: number; seconds: number }> = [];
+
+  for (let index = 0; index < run.segments.length; index++) {
+    const segment = run.segments[index];
+    const sourcePath = join(outputDir, `film_source_${run.id}_${index}.mp4`);
+    let offset = 0;
+    for (const shot of segment.plan.shots) {
+      const shotPath = join(outputDir, `film_${run.id}_shot_${shot.shotId}.mp4`);
+      await execFileAsync(ffmpegBin(), [
+        "-y", "-ss", String(offset), "-i", sourcePath, "-t", String(shot.duration),
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart", shotPath,
+      ]);
+      const shotUrl = `/api/output/${run.projectId}/${shotPath.split(/[\\/]/).pop()}`;
+      await getDb().insert(assets).values({
+        projectId: run.projectId,
+        shotId: shot.shotId,
+        type: "ai_generated",
+        filePath: shotUrl,
+        provider: run.provider,
+        model: run.model,
+        prompt: segment.options.prompt,
+        selected: true,
+        status: "done",
+      });
+      shotPaths.push(shotPath);
+      offset += shot.duration;
+    }
+    shotSummaries.push({
+      shotIds: segment.plan.shots.map((shot) => shot.shotId),
+      timelineSeconds: segment.plan.shots.reduce((sum, shot) => sum + shot.duration, 0),
+      seconds: segment.plan.seconds,
+    });
+  }
+
+  const listPath = join(outputDir, `film_${run.id}.concat.txt`);
+  await writeFile(listPath, shotPaths.map((path) => `file '${path.replace(/'/g, "'\\''")}'`).join("\n"));
+  const fileName = `film_${Date.now()}.mp4`;
+  const outputPath = join(outputDir, fileName);
+  await execFileAsync(ffmpegBin(), ["-y", "-f", "concat", "-safe", "0", "-i", listPath, "-c", "copy", outputPath]);
+  const probe = await probeMedia(outputPath).catch((error) => {
+    console.warn("整片输出媒体探测失败，继续返回已生成文件:", error instanceof Error ? error.message : String(error));
+    return undefined;
+  });
+  const [composition] = await getDb().insert(compositions).values({
+    projectId: run.projectId,
+    outputPath,
+    resolution: "720p",
+    aspectRatio: "9:16",
+    ...(probe?.duration ? { duration: Math.round(probe.duration * 1000) } : {}),
+    aigcBadge: false,
+    label: `九宫格整片 · ${run.model.split("/").slice(0, 2).pop() ?? run.model}`.slice(0, 60),
+    status: "done",
+  }).returning();
+  return {
+    url: `/api/output/${run.projectId}/${fileName}`,
+    compositionId: composition.id,
+    fileName,
+    seconds: Math.round(probe?.duration ?? run.segments.reduce((sum, segment) => sum + segment.plan.seconds, 0)),
+    segmentCount: run.segments.length,
+    segments: shotSummaries,
+  };
 }
 
 /**
@@ -47,261 +133,185 @@ function shotKeyframe(asset: { filePath?: string | null; thumbnailPath?: string 
  *
  * body: { scriptId, provider, apiKey, model?, baseUrl?, options? }
  */
-export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }): Promise<NextResponse> {
+  let activeRunId: string | undefined;
   try {
     const { id } = await params;
-    if (!/^[a-zA-Z0-9-]+$/.test(id)) {
-      return apiError(req, "无效的项目ID", "Invalid project id", 400);
+    if (!/^[a-zA-Z0-9-]+$/.test(id)) return apiError(req, "无效的项目ID", "Invalid project id", 400);
+    const body = await req.json() as Record<string, unknown>;
+    if (typeof body.filmRunId === "string") {
+    if (typeof body.filmRunId === "string") activeRunId = body.filmRunId;
+      const summary = await resumeFilmRun(req, id, body);
+      return NextResponse.json(summary);
     }
-    const body = await req.json();
-    const { scriptId, provider: providerName, model, apiKey, baseUrl, options, characterSheetUrl, dryRun, spendCapUsd, acknowledgeOverCap } = body as {
-      scriptId?: string;
-      provider?: string;
-      model?: string;
-      apiKey?: string;
-      baseUrl?: string;
-      options?: Record<string, unknown>;
-      /** Presenter's multi-view sheet — leads reference_images as the identity anchor (@Image1) */
-      characterSheetUrl?: string;
-      /** Preview only: return the full film prompt + counts + warnings, submit nothing, spend nothing */
-      dryRun?: boolean;
-      /** Refuse to submit when the estimate exceeds this many USD (0/omitted = no cap) */
-      spendCapUsd?: number;
-      /** Explicit go-ahead for a generation the cap would otherwise block */
-      acknowledgeOverCap?: boolean;
-    };
-    if (!scriptId) {
-      return apiError(req, "缺少 scriptId", "Missing scriptId", 400);
-    }
+    const scriptId = typeof body.scriptId === "string" ? body.scriptId : "";
+    const providerName = typeof body.provider === "string" ? body.provider : "";
+    const model = typeof body.model === "string" ? body.model : undefined;
+    const apiKey = typeof body.apiKey === "string" ? body.apiKey : "";
+    const baseUrl = typeof body.baseUrl === "string" ? body.baseUrl : "";
+    const options = body.options && typeof body.options === "object" ? body.options as Record<string, unknown> : {};
+    const characterSheetUrl = typeof body.characterSheetUrl === "string" ? body.characterSheetUrl : undefined;
+    const dryRun = body.dryRun === true;
+    const spendCapUsd = Number(body.spendCapUsd);
+    const acknowledgeOverCap = body.acknowledgeOverCap === true;
+    if (!scriptId) return apiError(req, "缺少 scriptId", "Missing scriptId", 400);
 
     const db = getDb();
-    const [script] = await db
-      .select()
-      .from(scripts)
-      .where(and(eq(scripts.id, scriptId), eq(scripts.projectId, id)));
+    const [script] = await db.select().from(scripts).where(and(eq(scripts.id, scriptId), eq(scripts.projectId, id)));
     if (!script) return apiError(req, "脚本不存在", "Script not found", 404);
-    const shots = Array.isArray(script.shots) ? script.shots : [];
-    if (shots.length < 2) {
-      return apiError(req, "分镜太少，一键整片至少需要 2 个分镜", "Too few shots — the film pass needs at least 2", 400);
-    }
-    if (shots.length > GRID_MAX_SHOTS) {
-      return apiError(
-        req,
-        `一键整片最多 ${GRID_MAX_SHOTS} 个分镜（当前 ${shots.length} 个）——长脚本请用逐镜生成+成片合成`,
-        `The film pass holds at most ${GRID_MAX_SHOTS} shots (this script has ${shots.length}) — use per-shot generation + compose for longer scripts`,
-        400
-      );
-    }
-    const totalSec = filmTotalSeconds(shots);
-    if (totalSec > FILM_MAX_SECONDS) {
-      return apiError(
-        req,
-        `脚本总时长 ${Math.round(totalSec)} 秒超过单次生成上限 ${FILM_MAX_SECONDS} 秒——请缩短脚本，或用逐镜生成+成片合成`,
-        `Total script duration ${Math.round(totalSec)}s exceeds the ${FILM_MAX_SECONDS}s single-generation cap — shorten the script or use per-shot generation + compose`,
-        400
-      );
-    }
+    const shots = Array.isArray(script.shots) ? script.shots as Shot[] : [];
+    if (shots.length < 2) return apiError(req, "分镜太少，一键整片至少需要 2 个分镜", "Too few shots — the film pass needs at least 2", 400);
+    if (shots.length > GRID_MAX_SHOTS) return apiError(req, `一键整片最多 ${GRID_MAX_SHOTS} 个分镜`, `The film pass holds at most ${GRID_MAX_SHOTS} shots`, 400);
 
-    // the model that will actually be billed — resolved identically on both branches, so the
-    // preview names the same model the paid submit uses (issue #28)
-    const choice = resolveFilmModel(model);
-    const fit = filmDurationFit(shots, choice.model);
-
+    const choice = resolveFilmModel(model, providerName);
+    const maxSeconds = videoMaxSeconds(choice.model, typeof options.maxDurationSeconds === "number" ? options.maxDurationSeconds : undefined);
+    const durationSegments = splitFilmShots(shots, maxSeconds, choice.model);
+    const maxRefImages = getVideoModelCapabilities(choice.model, undefined, providerName).maxReferenceImages;
+    const refLimit = maxRefImages ?? 9;
+    const hasSheet = Boolean(characterSheetUrl);
+    const plans: Array<{ shots: Shot[]; seconds: number }> = [];
+    let refChunk: Shot[] = [];
+    let refSeconds = 0;
+    for (const durationSegment of durationSegments) {
+      for (const shot of durationSegment.shots) {
+        if (refChunk.length >= refLimit - (hasSheet ? 1 : 0)) {
+          plans.push({ shots: refChunk, seconds: Math.round(refSeconds) });
+          refChunk = [];
+          refSeconds = 0;
+        }
+        refChunk.push(shot);
+        refSeconds += shot.duration;
+      }
+      if (refChunk.length) {
+        plans.push({ shots: refChunk, seconds: Math.round(refSeconds) });
+        refChunk = [];
+        refSeconds = 0;
+      }
+    }
+    const scriptSeconds = Math.round(filmTotalSeconds(shots));
+    const estimateOptions = {
+      width: typeof options.width === "number" ? options.width : 768,
+      height: typeof options.height === "number" ? options.height : 1365,
+    };
     if (dryRun) {
-      const prompt = buildStoryboardFilmPrompt(shots, script.characters, { characterSheet: !!characterSheetUrl });
-      const previewOpts = (options ?? {}) as { width?: number; height?: number };
-      const estimate = estimateFilmSpend(await unitPriceUsd(choice.model, baseUrl), fit.seconds, previewOpts);
-      // planned reference count: one keyframe per shot (+ the identity sheet when present) —
-      // computable before the grid pass has actually rendered the keyframes
-      const plannedRefs = shots.length + (characterSheetUrl ? 1 : 0);
+      const prompts = plans.map((segment) => buildStoryboardFilmPrompt(segment.shots, script.characters, { characterSheet: hasSheet }));
+      const estimate = estimateFilmSpend(await unitPriceUsd(choice.model, baseUrl), scriptSeconds, estimateOptions);
+      const referenceImages = Math.max(...plans.map((segment) => segment.shots.length + (hasSheet ? 1 : 0)));
       return NextResponse.json({
-        dryRun: true,
-        prompt,
-        shotCount: shots.length,
-        seconds: fit.seconds,
-        model: choice.model,
-        ...(choice.swappedFrom && { swappedFrom: choice.swappedFrom }),
-        scriptSeconds: fit.scriptSeconds,
-        modelMaxSeconds: fit.cap,
-        durationOverflow: fit.overflow,
-        referenceImages: plannedRefs,
-        referenceQuota: referenceQuotaCheck(plannedRefs, choice.model),
-        dialogueWarnings: dialogueDensityWarnings(shots),
-        // undefined when the platform publishes no price — the UI must say "unknown", not "free"
-        ...(estimate && { estimate }),
+        dryRun: true, prompt: prompts[0], prompts, shotCount: shots.length, seconds: scriptSeconds, scriptSeconds,
+        model: choice.model, ...(choice.swappedFrom && { swappedFrom: choice.swappedFrom }), modelMaxSeconds: maxSeconds,
+        durationOverflow: false, segmentCount: plans.length, segmentSeconds: plans.map((segment) => segment.seconds),
+        referenceImages, referenceQuota: referenceQuotaCheck(referenceImages, choice.model),
+        dialogueWarnings: dialogueDensityWarnings(shots), ...(estimate && { estimate }),
       });
     }
+    if (!providerName) return apiError(req, "缺少 provider", "Missing provider", 400);
+    if (!apiKey) return apiError(req, "缺少 API Key，请先在设置中配置视频平台", "Missing API key — configure a video provider in settings first", 400);
 
-    // pre-spend duration gate: a script longer than the chosen model can render comes back
-    // silently truncated (the provider snaps the request down to its own ceiling), so refuse
-    // rather than bill for a film that loses its tail
-    if (fit.overflow) {
-      return apiError(
-        req,
-        `脚本总时长 ${fit.scriptSeconds} 秒超过 ${choice.model} 的单次上限 ${fit.cap} 秒——继续会把后半段截掉。请缩短脚本，或换一个支持更长时长的模型`,
-        `The ${fit.scriptSeconds}s script exceeds ${choice.model}'s ${fit.cap}s single-generation ceiling — generating would silently cut the tail. Shorten the script or pick a longer-form model`,
-        400
-      );
-    }
-
-    // past the dryRun branch money moves — provider and key become mandatory
-    // (dryRun spends nothing, so it needs neither)
-    if (!providerName) {
-      return apiError(req, "缺少 provider", "Missing provider", 400);
-    }
-    if (!apiKey) {
-      return apiError(req, "缺少 API Key，请先在设置中配置视频平台", "Missing API key — configure a video provider in settings first", 400);
-    }
-
-    // every shot needs a keyframe IMAGE (grid cells or per-shot stills) to cite as @ImageN
     const assetRows = await db.select().from(assets).where(and(eq(assets.projectId, id), eq(assets.selected, true)));
-    const byShot = new Map(assetRows.map((a) => [a.shotId, a]));
-    const keyframes: string[] = [];
+    const byShot = new Map(assetRows.map((asset) => [asset.shotId, asset]));
+    const keyframes = new Map<number, string>();
     const missing: number[] = [];
     for (const shot of shots) {
-      const kf = shotKeyframe(byShot.get(shot.shotId));
-      if (kf) keyframes.push(kf);
+      const keyframe = shotKeyframe(byShot.get(shot.shotId));
+      if (keyframe) keyframes.set(shot.shotId, keyframe);
       else missing.push(shot.shotId);
     }
-    if (missing.length > 0) {
-      return apiError(
-        req,
-        `分镜 ${missing.join("、")} 还没有关键帧图——先跑「九宫格分镜」或逐镜生图`,
-        `Shots ${missing.join(", ")} have no keyframe image yet — run the storyboard grid or per-shot generation first`,
-        400
-      );
-    }
-    // remote providers can't reach localhost: local /api/files keyframes travel as Base64.
-    // With a character sheet it leads the array (@Image1 = identity anchor, shots shift to @Image2..)
-    const refInputs = [...(characterSheetUrl ? [characterSheetUrl] : []), ...keyframes];
-    // pre-spend quota gate: a reference count over the model's schema limit is a guaranteed
-    // upstream rejection — block BEFORE the paid submit instead of paying to find out
-    const quota = referenceQuotaCheck(refInputs.length, choice.model);
-    if (!quota.ok) {
-      return apiError(
-        req,
-        `参考图 ${quota.count} 张超过该模型上限 ${quota.limit} 张——减少分镜数${characterSheetUrl ? "，或去掉定妆照（少一张参考位）" : ""}后再试`,
-        `${quota.count} reference images exceed this model's limit of ${quota.limit} — reduce the shot count${characterSheetUrl ? " or drop the presenter sheet (frees one slot)" : ""} and retry`,
-        400
-      );
-    }
-    // spend gate: refuse a run whose estimate blows the caller's cap unless they said go anyway.
-    // Runs before the submit, so an over-cap generation costs nothing (issue #28).
+    if (missing.length) return apiError(req, `分镜 ${missing.join("、")} 还没有关键帧图`, `Shots ${missing.join(", ")} have no keyframe image yet`, 400);
+
     const cap = Number(spendCapUsd);
     if (Number.isFinite(cap) && cap > 0 && !acknowledgeOverCap) {
-      // compare the HIGH end: a floor-priced estimate is exactly what hid the real bill (issue #28)
-      const capOpts = (options ?? {}) as { width?: number; height?: number };
-      const estimate = estimateFilmSpend(await unitPriceUsd(choice.model, baseUrl), fit.seconds, capOpts);
-      if (estimate && estimate.maxUsd > cap) {
-        return apiError(
-          req,
-          `预估花费最高 $${estimate.maxUsd.toFixed(2)}（${choice.model} $${estimate.unitUsd}/秒 × ${estimate.seconds} 秒；当前分辨率档实测约为基准价的 ${estimate.tierMultiplier} 倍）超过你设置的单次上限 $${cap}——请调高上限、调低分辨率、换更便宜的模型，或缩短脚本`,
-          `Estimated up to $${estimate.maxUsd.toFixed(2)} (${choice.model} at $${estimate.unitUsd}/s x ${estimate.seconds}s; this resolution tier measured about ${estimate.tierMultiplier}x the base rate) exceeds your per-run cap of $${cap} — raise the cap, lower the resolution, pick a cheaper model, or shorten the script`,
-          400
-        );
-      }
+      const estimate = estimateFilmSpend(await unitPriceUsd(choice.model, baseUrl), scriptSeconds, estimateOptions);
+      if (estimate && estimate.maxUsd > cap) return apiError(req, `预估花费最高 $${estimate.maxUsd.toFixed(2)}，超过单次上限 $${cap}`, `Estimated spend $${estimate.maxUsd.toFixed(2)} exceeds the per-run cap of $${cap}`, 400);
     }
 
-    const referenceImageUrls = (await Promise.all(refInputs.map(toRemoteUsableImage))).filter(
-      (u): u is string => !!u
-    );
-
-    const prompt = buildStoryboardFilmPrompt(shots, script.characters, { characterSheet: !!characterSheetUrl });
-    const duration = fit.seconds;
-    // lip-sync guardrail (advisory, never blocks): overstuffed lines drift out of sync near the
-    // end of a segment — surfaced so the UI/CLI can suggest trimming before the paid generation
+    const provider = createProvider({ name: providerName, apiKey, baseUrl });
+    const runId = randomUUID();
+    activeRunId = runId;
     const dialogueWarnings = dialogueDensityWarnings(shots);
-    const provider = createProvider({ name: providerName, apiKey, baseUrl: baseUrl ?? "" });
-
-    const opts = (options ?? {}) as { width?: number; height?: number };
-    const videoOptions = {
-      ...(options ?? {}),
-      modelId: choice.model,
-      mode: "video-to-video" as const,
-      prompt,
-      referenceImageUrls,
-      duration,
-      // portrait 720p unless the caller asked otherwise — maps to resolution+ratio provider-side
-      width: opts.width ?? 720,
-      height: opts.height ?? 1280,
-      // native speech IS the feature: dialogue lives in the prompt, audio must be on
-      audioEnabled: true,
-    };
-
-    // legacy single-phase path for providers without two-phase task support
-    if (!provider.submitVideoTask || !provider.waitForTask) {
-      const result = await provider.generateVideo(videoOptions);
-      const saved = await persistFilm(id, result.videoUrls?.[0], choice.model);
-      return NextResponse.json({ ...saved, taskId: result.taskId, modelId: result.modelId, seconds: duration, dialogueWarnings });
-    }
-
-    // Phase 1: submit, then persist the paid task ID before polling (issue #16)
-    const { taskId, modelId } = await provider.submitVideoTask(videoOptions);
-    const rowId = await recordAiTask({
-      projectId: id,
-      provider: providerName,
-      model: modelId,
-      mediaType: "video",
-      mode: "video-to-video",
-      prompt,
-      taskId,
-    });
-
-    // Phase 2: wait; a lost poll marks the row "unknown" but never drops the paid task
-    try {
-      const finalStatus = await provider.waitForTask(taskId, { interval: 5000 });
-      const result = finalStatus.result;
-      const videoUrl = result && "videoUrls" in result ? result.videoUrls?.[0] : undefined;
-      if (!videoUrl) {
-        await updateAiTask(rowId, { status: "unknown", error: "任务完成但未返回视频地址" });
-        return NextResponse.json(
-          { error: errText(req, "任务完成但未返回视频地址", "Task completed but returned no video URL"), taskId, modelId, recoverable: true },
-          { status: 502 }
-        );
-      }
-      await updateAiTask(rowId, { status: "completed", resultUrls: [videoUrl], error: null });
-      const saved = await persistFilm(id, videoUrl, modelId);
-      return NextResponse.json({ ...saved, taskId, modelId, seconds: duration, dialogueWarnings });
-    } catch (error) {
-      const failed = error instanceof ProviderError && error.code === "TASK_FAILED";
-      const message = error instanceof Error ? error.message : String(error);
-      await updateAiTask(rowId, { status: failed ? "failed" : "unknown", error: message });
-      return NextResponse.json(
-        {
-          error: failed
-            ? message
-            : errText(
-                req,
-                `${message}。任务 ID ${taskId} 已保存，请勿重复提交`,
-                `${message}. Task ID ${taskId} has been saved — do not resubmit`
-              ),
-          taskId,
-          modelId,
-          recoverable: !failed,
+    const segments = await Promise.all(plans.map(async (plan) => {
+      const refs = [...(characterSheetUrl ? [characterSheetUrl] : []), ...plan.shots.map((shot) => keyframes.get(shot.shotId)!)];
+      const referenceImageUrls = (await Promise.all(refs.map(toRemoteUsableImage))).filter((url): url is string => Boolean(url));
+      return {
+        plan,
+        options: {
+          ...options,
+          modelId: choice.model,
+          mode: "video-to-video" as const,
+          prompt: buildStoryboardFilmPrompt(plan.shots, script.characters, { characterSheet: hasSheet }),
+          referenceImageUrls,
+          duration: plan.seconds,
+          width: typeof options.width === "number" ? options.width : 768,
+          height: typeof options.height === "number" ? options.height : 1365,
+          audioEnabled: true,
+          ...(providerName === "vgenv" && {
+            extra: {
+              ...((options.extra && typeof options.extra === "object") ? options.extra as Record<string, unknown> : {}),
+              resolution: ((options.extra && typeof options.extra === "object") ? (options.extra as Record<string, unknown>).resolution : undefined) ?? "768p",
+              upscale: false,
+            },
+          }),
         },
-        { status: failed ? 500 : 504 }
-      );
-    }
+        state: "queued" as const,
+      };
+    }));
+    const run: FilmRun = {
+      version: 1, id: runId, projectId: id, scriptId, provider: providerName, baseUrl, model: choice.model,
+      createdAt: new Date().toISOString(), segments, keyframes: [...keyframes.entries()],
+      warnings: dialogueWarnings.map((warning) => `shot-${warning.index + 1}-dense-dialogue`),
+    };
+    await saveFilmRun(run);
+    const result = await withFilmRunLock(id, runId, () => executeFilmRun(run, provider, finalizeFilmRun));
+    return NextResponse.json({ ...result, scriptSeconds, seconds: scriptSeconds, modelId: choice.model, dialogueWarnings });
   } catch (error) {
-    console.error("一键整片生成失败:", error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : errText(req, "一键整片生成失败", "Storyboard film failed") },
-      { status: 500 }
-    );
+    const message = error instanceof Error ? error.message : errText(req, "一键整片生成失败", "Storyboard film failed");
+    console.error("一键整片生成失败:", message);
+    let recovery: Record<string, unknown> = {};
+    let status = activeRunId ? 502 : 500;
+    if (activeRunId) {
+      try {
+        const { id } = await params;
+        const saved = await loadFilmRun(id, activeRunId);
+        recovery = filmRunSummary(saved);
+        if (saved.segments.some((segment) => segment.state === "unknown" && segment.taskId)) status = 504;
+      } catch (error) {
+        console.warn("整片任务失败后读取恢复清单失败:", error instanceof Error ? error.message : String(error));
+        recovery = { filmRunId: activeRunId };
+      }
+    }
+    return NextResponse.json({ error: message, ...recovery, recoverable: Boolean(activeRunId) }, { status });
   }
 }
 
-/**
- * Published per-second price for a model, or undefined when the platform doesn't publish one.
- * The catalog endpoint is public (no key needed), so the free dryRun can price a run too.
- */
+export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }): Promise<NextResponse> {
+  try {
+    const { id } = await params;
+    if (!/^[a-zA-Z0-9-]+$/.test(id)) return NextResponse.json({ error: "Invalid project id" }, { status: 400 });
+    const { listFilmRuns } = await import("@/lib/storyboard-film-run");
+    return NextResponse.json({ runs: await listFilmRuns(id) });
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "整片记录读取失败" }, { status: 500 });
+  }
+}
+
 async function unitPriceUsd(modelId: string, baseUrl?: string): Promise<number | undefined> {
   try {
     await fetchAtlasCatalog(baseUrl?.trim() || ATLAS_BASE_URL);
     return parseUnitUsd(getCachedAtlasEntry(modelId)?.priceBase);
-  } catch {
-    return undefined; // pricing is advisory — never block a run because the catalog was unreachable
+  } catch (error) {
+    console.warn("整片价格查询失败，继续执行:", error instanceof Error ? error.message : String(error));
+    return undefined;
   }
+}
+
+/** Resume a previously saved film run without submitting already-paid segments again. */
+async function resumeFilmRun(req: NextRequest, projectId: string, body: Record<string, unknown>) {
+  const filmRunId = typeof body.filmRunId === "string" ? body.filmRunId : "";
+  const apiKey = typeof body.apiKey === "string" ? body.apiKey : "";
+  if (!filmRunId || !apiKey) return apiError(req, "恢复需要 filmRunId 和 API Key", "Resume requires filmRunId and API key", 400);
+  const run = await loadFilmRun(projectId, filmRunId);
+  const provider = createProvider({ name: run.provider, apiKey, baseUrl: run.baseUrl });
+  return withFilmRunLock(projectId, run.id, () => executeFilmRun(run, provider, finalizeFilmRun));
 }
 
 /** Download the generated film into the project's output dir and register it as a composition. */
@@ -316,7 +326,10 @@ async function persistFilm(projectId: string, videoUrl: string | undefined, mode
   const outputPath = join(outputDir, fileName);
   await writeFile(outputPath, buf);
 
-  const probe = await probeMedia(outputPath).catch(() => undefined);
+  const probe = await probeMedia(outputPath).catch((error) => {
+    console.warn("整片输出媒体探测失败，继续保存合成记录:", error instanceof Error ? error.message : String(error));
+    return undefined;
+  });
   const db = getDb();
   const [comp] = await db
     .insert(compositions)
@@ -326,7 +339,6 @@ async function persistFilm(projectId: string, videoUrl: string | undefined, mode
       resolution: "720p",
       aspectRatio: "9:16",
       ...(probe?.duration ? { duration: Math.round(probe.duration * 1000) } : {}),
-      // one-call native generation: no badge burned in — the release gate reports this honestly
       aigcBadge: false,
       label: `九宫格整片 · ${model.split("/").slice(0, 2).pop() ?? model}`.slice(0, 60),
       status: "done",

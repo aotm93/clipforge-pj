@@ -11,7 +11,7 @@
  */
 
 export type GenAspectRatio = "9:16" | "16:9" | "1:1";
-export type GenResolution = "720p" | "1080p";
+export type GenResolution = "480p" | "720p" | "768p" | "1080p";
 export type GenMediaType = "image" | "video";
 
 /** User-defined custom model (any model id mounted on an existing platform) */
@@ -27,6 +27,8 @@ export interface CustomModel {
   mediaType: GenMediaType;
   /** Whether the video model natively includes audio (saves TTS for commerce videos) */
   supportsAudio?: boolean;
+  /** Per-request duration ceiling, when the provider publishes one. */
+  maxDurationSeconds?: number;
 }
 
 /** Global default parameters for image generation */
@@ -56,6 +58,8 @@ export interface VideoGenParams {
   motionStrength?: number;
   /** Random seed (leave empty to randomize each time) */
   seed?: number;
+  /** Whether provider-side super resolution is enabled. */
+  upscale?: boolean;
   /** Negative prompt */
   negativePrompt?: string;
 }
@@ -67,11 +71,9 @@ export const DEFAULT_IMAGE_PARAMS: ImageGenParams = {
 
 export const DEFAULT_VIDEO_PARAMS: VideoGenParams = {
   aspectRatio: "9:16",
-  // 720p, not 1080p: vertical short video is delivered at phone scale and every platform
-  // re-encodes on upload, so the higher tier mostly buys a bigger invoice. Providers price
-  // resolution tiers separately, and 1080p is a deliberate opt-in rather than the default.
-  resolution: "720p",
+  resolution: "768p",
   duration: 5,
+  upscale: false,
 };
 
 export const ASPECT_RATIO_OPTIONS: { value: GenAspectRatio; label: string }[] = [
@@ -81,7 +83,9 @@ export const ASPECT_RATIO_OPTIONS: { value: GenAspectRatio; label: string }[] = 
 ];
 
 export const RESOLUTION_OPTIONS: { value: GenResolution; label: string }[] = [
+  { value: "480p", label: "480p" },
   { value: "720p", label: "720p" },
+  { value: "768p", label: "768p" },
   { value: "1080p", label: "1080p" },
 ];
 
@@ -100,8 +104,8 @@ export function imageSize(aspect: GenAspectRatio): { width: number; height: numb
 
 /** Resolution + aspect ratio → video dimensions */
 export function videoSize(resolution: GenResolution, aspect: GenAspectRatio): { width: number; height: number } {
-  const long = resolution === "1080p" ? 1920 : 1280;
-  const short = resolution === "1080p" ? 1080 : 720;
+  const long = resolution === "1080p" ? 1920 : resolution === "768p" ? 1365 : resolution === "720p" ? 1280 : 854;
+  const short = resolution === "1080p" ? 1080 : resolution === "768p" ? 768 : resolution === "720p" ? 720 : 480;
   switch (aspect) {
     case "16:9":
       return { width: long, height: short };
@@ -112,6 +116,7 @@ export function videoSize(resolution: GenResolution, aspect: GenAspectRatio): { 
       return { width: short, height: long };
   }
 }
+
 
 /** Maps image parameters to the options object expected by /api/ai/image (field names aligned with ImageOptions) */
 export function buildImageOptions(p: ImageGenParams | undefined): Record<string, unknown> {
@@ -145,21 +150,25 @@ function finiteInteger(value: unknown, fallback?: number, min?: number, max?: nu
 }
 
 /** Maps video parameters to the options object expected by /api/ai/video (field names aligned with VideoOptions) */
-export function buildVideoOptions(p: VideoGenParams | undefined): Record<string, unknown> {
+export function buildVideoOptions(p: VideoGenParams | undefined, maxDurationSeconds?: number): Record<string, unknown> {
   const params = p ?? DEFAULT_VIDEO_PARAMS;
   const { width, height } = videoSize(params.resolution, params.aspectRatio);
   const duration = finiteNumber(params.duration);
   const fps = finiteNumber(params.fps);
   const motionStrength = finiteNumber(params.motionStrength);
+  const maxDuration = finiteInteger(maxDurationSeconds, undefined);
   const seed = finiteInteger(params.seed, undefined);
   return {
     width,
     height,
     ...(duration != null && { duration }),
+    ...(maxDuration != null && maxDuration >= 4 && maxDuration <= 120 && { maxDurationSeconds: maxDuration }),
     ...(fps != null && { fps }),
     ...(motionStrength != null && { motionStrength }),
     ...(seed != null && { seed }),
     ...(params.negativePrompt ? { negativePrompt: params.negativePrompt } : {}),
+    extra: { resolution: params.resolution, upscale: params.upscale === true },
+    ...(params.upscale === true && { upscale: true }),
   };
 }
 
@@ -181,6 +190,8 @@ export interface GenModelTarget {
   model: string;
   apiKey: string;
   baseUrl?: string;
+  supportsAudio?: boolean;
+  maxDurationSeconds?: number;
 }
 
 /**
@@ -210,7 +221,7 @@ export async function resolveDefaultModelTarget(
     const model = merged.find((m) => m.id === defaultModel);
     if (!model) return null;
     const prov = enabled.find((e) => e.name === model.provider);
-    return prov ? { provider: prov.name, model: defaultModel, apiKey: prov.apiKey, baseUrl: prov.baseUrl } : null;
+    return prov ? { provider: prov.name, model: defaultModel, apiKey: prov.apiKey, baseUrl: prov.baseUrl, supportsAudio: model.supportsAudio, maxDurationSeconds: model.maxDurationSeconds } : null;
   } catch {
     return null;
   }
@@ -224,6 +235,7 @@ export interface ModelLike {
   mediaType?: GenMediaType;
   modes?: string[];
   supportsAudio?: boolean;
+  maxDurationSeconds?: number;
   /** Marked as user-defined (UI may add a badge / distinguish the source) */
   custom?: boolean;
 }
@@ -238,6 +250,7 @@ export function customModelToModelLike(cm: CustomModel): ModelLike {
     modes: cm.mediaType === "image" ? ["text-to-image", "image-to-image"] : ["text-to-video", "image-to-video"],
     supportsAudio: cm.supportsAudio,
     custom: true,
+    ...(cm.maxDurationSeconds !== undefined && { maxDurationSeconds: cm.maxDurationSeconds }),
   };
 }
 
@@ -252,11 +265,12 @@ export function mergeCustomModels(
   mediaType: GenMediaType,
   enabledProviders?: Set<string>
 ): ModelLike[] {
-  const extras = (customModels ?? [])
+  const customEntries = (customModels ?? [])
     .filter((cm) => cm.mediaType === mediaType)
     .filter((cm) => !enabledProviders || enabledProviders.has(cm.provider))
-    .map(customModelToModelLike)
-    // Remove entries whose id already exists in the official list
-    .filter((cm) => !fetched.some((m) => m.id === cm.id));
-  return [...fetched, ...extras];
+    .map(customModelToModelLike);
+  const customById = new Map(customEntries.map((cm) => [cm.id, cm]));
+  const mergedFetched = fetched.map((model) => customById.has(model.id) ? { ...model, ...customById.get(model.id) } : model);
+  const extras = customEntries.filter((cm) => !fetched.some((m) => m.id === cm.id));
+  return [...mergedFetched, ...extras];
 }

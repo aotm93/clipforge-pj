@@ -16,6 +16,8 @@ const eslintConfig = defineConfig([
     "electron/**",
     "scripts/**",
     "release/**",
+    // Generated verification artifacts are not application source and may use CommonJS test harnesses.
+    "artifacts/**",
   ]),
 ]);
 

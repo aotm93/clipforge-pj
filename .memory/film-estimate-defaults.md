@@ -6,7 +6,7 @@ type: feedback
 
 **Why**
 
-The film endpoint defaults paid requests to 720 by 1280, while an estimate without dimensions applies the lowest price tier. Estimating only the first segment also understates the cost of a film split across multiple requests.
+The film endpoint now defaults paid requests to 768p (1365 by 768, or 768 by 1365 for portrait), while an estimate without dimensions applies the lowest price tier. Estimating only the first segment understates the cost of a film split across multiple requests.
 
 **How to apply**
 

@@ -44,6 +44,7 @@ interface VideoModelTarget {
   model: string;
   apiKey: string;
   baseUrl?: string;
+  maxDurationSeconds?: number;
 }
 
 export default function ClonePage() {
@@ -111,7 +112,7 @@ export default function ClonePage() {
         const model = merged.find((m) => m.id === defaultVideoModel);
         if (cancelled || !model) return;
         const prov = enabled.find((e) => e.name === model.provider);
-        if (prov) setVideoModelTarget({ provider: prov.name, model: defaultVideoModel, apiKey: prov.apiKey, baseUrl: prov.baseUrl });
+        if (prov) setVideoModelTarget({ provider: prov.name, model: defaultVideoModel, apiKey: prov.apiKey, baseUrl: prov.baseUrl, maxDurationSeconds: model.maxDurationSeconds });
       } catch {
         // model-tier button simply stays disabled
       }
@@ -220,8 +221,8 @@ export default function ClonePage() {
     setReplicateResult(null);
     try {
       const { projectId, paths } = await createCloneProject();
-      const videoOptions = buildVideoOptions(videoParams);
-      videoOptions.duration = Math.min(15, Math.max(4, Math.round(refAnalysis.duration)));
+      const videoOptions = buildVideoOptions(videoParams, videoModelTarget?.maxDurationSeconds);
+      videoOptions.duration = Math.min(videoModelTarget?.maxDurationSeconds ?? 15, Math.max(4, Math.round(refAnalysis.duration)));
       const res = await fetch("/api/ai/video", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

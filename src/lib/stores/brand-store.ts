@@ -1,5 +1,6 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { createJSONStorage, persist } from "zustand/middleware";
+import { createSqliteStorage } from "@/lib/sqlite-storage";
 
 // brand configuration
 export interface BrandConfig {
@@ -60,6 +61,7 @@ export const useBrandStore = create<BrandState>()(
     }),
     {
       name: "daihuo-jianshou-brand",
+      storage: createJSONStorage(() => createSqliteStorage("daihuo-jianshou-brand")),
     }
   )
 );

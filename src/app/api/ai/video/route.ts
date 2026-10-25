@@ -100,17 +100,29 @@ export async function POST(req: NextRequest) {
     const { taskId, modelId } = await provider.submitVideoTask(videoOptions);
 
     // Persist the paid task before polling starts — this row is the recovery handle.
-    const rowId = await recordAiTask({
-      projectId,
-      shotId,
-      provider: providerName,
-      model: modelId,
-      mediaType: "video",
-      mode: videoOptions.mode,
-      prompt: videoOptions.prompt,
-      taskId,
-      ...(controlPlan && { controlPlan }),
-    });
+    let rowId: string | null = null;
+    try {
+      rowId = await recordAiTask({
+        projectId,
+        shotId,
+        provider: providerName,
+        model: modelId,
+        mediaType: "video",
+        mode: videoOptions.mode,
+        prompt: videoOptions.prompt,
+        taskId,
+        ...(controlPlan && { controlPlan }),
+      });
+    } catch (error) {
+      console.warn("视频任务已提交，但本地任务记录失败:", error instanceof Error ? error.message : String(error));
+      rowId = null;
+    }
+    if (!rowId) {
+      return NextResponse.json(
+        { error: errText(req, "任务已提交但本地记录失败，请使用任务 ID 恢复查询，勿重复提交", "Task was submitted but could not be recorded locally. Use the task ID to recover and do not resubmit"), taskId, modelId, recoverable: true },
+        { status: 502 },
+      );
+    }
 
     // Phase 2: wait. Transient status-query failures are tolerated inside waitForTask;
     // if it still fails, the task is marked "unknown"/"failed" but never dropped.

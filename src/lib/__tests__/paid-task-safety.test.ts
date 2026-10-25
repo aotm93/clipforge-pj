@@ -47,6 +47,7 @@ function stubStatusFetch(status: number) {
     status,
     statusText: "ERR",
     text: async () => "boom",
+    headers: new Headers(),
   }));
   vi.stubGlobal("fetch", fn);
   return fn;

@@ -130,6 +130,8 @@ export interface VideoOptions {
   height?: number
   /** Video duration (seconds) */
   duration?: number
+  /** Per-request model duration cap (seconds), when known */
+  maxDurationSeconds?: number
   /** Frame rate */
   fps?: number
   /** First-frame image URL (image-to-video mode) */
@@ -154,6 +156,8 @@ export interface VideoOptions {
   audioPrompt?: string
   /** Whether to enable audio generation */
   audioEnabled?: boolean
+  /** Provider-side super-resolution toggle */
+  upscale?: boolean
   /** Reference audio URLs (voice/timbre reference for audio-capable models; Ark caps at 3) */
   referenceAudioUrls?: string[]
   /** Additional parameters */

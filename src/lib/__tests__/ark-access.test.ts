@@ -51,3 +51,16 @@ it("keeps an authenticated non-Ark provider probe successful", async () => {
   }));
   expect((await response.json()).status).toBe("ok");
 });
+
+
+it("tests a custom OpenAI-compatible media endpoint using its configured base URL", async () => {
+  const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+  vi.stubGlobal("fetch", fetchMock);
+  const response = await POST(new NextRequest("http://localhost/api/ai/test-provider", {
+    method: "POST",
+    body: JSON.stringify({ name: "openai-compatible-media", apiKey: "test-key", baseUrl: "https://media.example.test/v1/" }),
+  }));
+  expect((await response.json()).status).toBe("ok");
+  expect(fetchMock.mock.calls[0][0]).toBe("https://media.example.test/v1/models");
+  expect(new Headers(fetchMock.mock.calls[0][1]?.headers).get("Authorization")).toBe("Bearer test-key");
+});

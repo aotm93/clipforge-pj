@@ -18,18 +18,28 @@ const DEFAULT_BASE: Record<string, string> = {
   alibaba: "https://dashscope.aliyuncs.com/api/v1",
   siliconflow: "https://api.siliconflow.cn/v1",
   openai: "https://api.openai.com/v1",
+  vgenv: "https://api.vgenv.com/v3",
+  "openai-compatible-media": "https://api.lk888.ai/v1",
 };
 
-type Probe = { url: string; headers: Record<string, string>; authFirst?: boolean; method?: "GET" | "POST"; body?: string };
+type Probe = { url: string; headers: Record<string, string>; authFirstStatuses?: number[]; method?: "GET" | "POST"; body?: string };
 
 function buildProbe(name: string, apiKey: string, baseUrl?: string): Probe {
   const base = (baseUrl || DEFAULT_BASE[name] || "").replace(/\/$/, "");
+  if (name === "vgenv") {
+    // V3 has no documented /models endpoint; a missing video ID still authenticates the request.
+    return {
+      url: `${base}/videos/00000000-0000-0000-0000-000000000000`,
+      headers: { Authorization: `Bearer ${apiKey}` },
+      authFirstStatuses: [404],
+    };
+  }
   if (name === "fal-ai") {
     // fal 先校验鉴权再解析 request id：到达 404/422 即说明 Key 有效
     return {
       url: `${base}/fal-ai/flux/requests/00000000-0000-0000-0000-000000000000/status`,
       headers: { Authorization: `Key ${apiKey}` },
-      authFirst: true,
+      authFirstStatuses: [404, 422],
     };
   }
   if (name === "replicate") {
@@ -38,6 +48,9 @@ function buildProbe(name: string, apiKey: string, baseUrl?: string): Probe {
   if (name === "alibaba") {
     // dashscope 原生无 /models，用 OpenAI 兼容模式的 /models 验 Key
     return { url: `https://dashscope.aliyuncs.com/compatible-mode/v1/models`, headers: { Authorization: `Bearer ${apiKey}` } };
+  }
+  if (name === "openai-compatible-media") {
+    return { url: `${base}/models`, headers: { Authorization: `Bearer ${apiKey}` } };
   }
   if (name === "atlas-cloud") {
     // Atlas 的 GET /models 是公开模型目录，无效 Key 也返回 2xx（会误判为有效）。
@@ -92,8 +105,8 @@ export async function POST(req: NextRequest) {
     if (r.status === 401 || r.status === 403) {
       return NextResponse.json({ status: "invalid", message: "Key 无效或无权限" });
     }
-    if (r.ok || probe.authFirst) {
-      // authFirst 平台：非 401/403 即视为鉴权通过
+    if (r.ok || probe.authFirstStatuses?.includes(r.status)) {
+      // Auth-first probes are only conclusive when the endpoint confirms a missing/invalid resource.
       return NextResponse.json({ status: "ok", message: "连接正常" });
     }
     return NextResponse.json({ status: "unknown", message: `无法判定（HTTP ${r.status}），可直接试生成` });

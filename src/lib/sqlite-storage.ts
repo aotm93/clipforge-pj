@@ -40,6 +40,10 @@ export function createSqliteStorage(key: string): StateStorage {
 
   return {
     getItem: async () => {
+      if (typeof window === "undefined") {
+        loaded = true;
+        return null;
+      }
       try {
         const response = await fetch(endpoint, { cache: "no-store" });
         if (response.ok) {

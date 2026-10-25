@@ -274,6 +274,7 @@ describe("一键整片：模型解析与时长适配", () => {
     // nothing configured: fallback with no swap to report
     expect(resolveFilmModel(undefined)).toEqual({ model: FILM_FALLBACK_MODEL });
     expect(resolveFilmModel("   ")).toEqual({ model: FILM_FALLBACK_MODEL });
+    expect(resolveFilmModel("hailuo-h3-cankaosheng", "openai-compatible-media")).toEqual({ model: "hailuo-h3-cankaosheng" });
   });
 
   it("modelMaxSeconds：读模型自己的时长上限，未知模型返回 undefined", () => {

@@ -11,6 +11,8 @@ import { ReplicateProvider } from './replicate'
 import { AlibabaProvider } from './alibaba'
 import { SiliconFlowProvider } from './siliconflow'
 import { OpenAIProvider } from './openai'
+import { OpenAICompatibleMediaProvider } from './openai-compatible-media'
+import { VgenvProvider } from './vgenv'
 
 // ==================== Provider 注册表 ====================
 
@@ -74,6 +76,20 @@ registerProvider({
   description: 'OpenAI 官方平台，支持 gpt-image-2 / gpt-image-1.5 图片生成与图生图编辑',
   factory: (config) => new OpenAIProvider(config),
 })
+registerProvider({
+  name: 'vgenv',
+  displayName: 'MiniMax (vgenv)',
+  description: 'vgenv MiniMax H3 视频生成平台，支持 Base、Cinematic 和授权 Origin 模型',
+  factory: (config) => new VgenvProvider(config),
+})
+
+registerProvider({
+  name: 'openai-compatible-media',
+  displayName: 'OpenAI 兼容第三方媒体',
+  description: 'OpenAI 兼容的第三方图片与异步视频媒体平台',
+  factory: (config) => new OpenAICompatibleMediaProvider(config),
+})
+
 
 // ==================== 工厂函数 ====================
 
@@ -159,3 +175,5 @@ export { VolcEngineProvider } from './volcengine'
 export { AlibabaProvider } from './alibaba'
 export { SiliconFlowProvider } from './siliconflow'
 export { OpenAIProvider } from './openai'
+export { OpenAICompatibleMediaProvider } from './openai-compatible-media'
+export { VgenvProvider } from './vgenv'

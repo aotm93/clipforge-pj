@@ -31,6 +31,9 @@ const PROVIDER_OPTIONS: { value: string; label: string }[] = [
   { value: "volcengine", label: "火山引擎" },
   { value: "alibaba", label: "阿里百炼" },
   { value: "siliconflow", label: "硅基流动" },
+  { value: "openai", label: "OpenAI" },
+  { value: "openai-compatible-media", label: "OpenAI 兼容第三方媒体" },
+  { value: "vgenv", label: "MiniMax (vgenv)" },
 ];
 
 const labelOf = (opts: { value: string; label: string }[], v: string) =>
@@ -92,15 +95,17 @@ export function GenerationSettings() {
   const ASPECT_OPTIONS = ASPECT_RATIO_OPTIONS.map((o) => ({ value: o.value, label: t(ASPECT_KEY[o.value] ?? o.value) }));
 
   // form state for adding a new custom model
-  const [form, setForm] = useState<{ provider: string; modelId: string; name: string; mediaType: GenMediaType; supportsAudio: boolean }>({
+  const [form, setForm] = useState<{ provider: string; modelId: string; name: string; mediaType: GenMediaType; supportsAudio: boolean; maxDurationSeconds?: number }>({
     provider: "fal-ai",
     modelId: "",
     name: "",
     mediaType: "image",
     supportsAudio: false,
+    maxDurationSeconds: undefined,
   });
 
-  const canAdd = form.modelId.trim().length > 0;
+  const validDuration = form.mediaType !== "video" || form.maxDurationSeconds === undefined || (Number.isInteger(form.maxDurationSeconds) && form.maxDurationSeconds >= 4 && form.maxDurationSeconds <= 120);
+  const canAdd = form.modelId.trim().length > 0 && validDuration;
   const handleAdd = () => {
     if (!canAdd) return;
     const cm: CustomModel = {
@@ -110,9 +115,10 @@ export function GenerationSettings() {
       name: form.name.trim() || form.modelId.trim(),
       mediaType: form.mediaType,
       ...(form.mediaType === "video" && form.supportsAudio ? { supportsAudio: true } : {}),
+      ...(form.mediaType === "video" && (form.maxDurationSeconds !== undefined || form.provider === "vgenv") ? { maxDurationSeconds: form.maxDurationSeconds ?? 15 } : {}),
     };
     addCustomModel(cm);
-    setForm((f) => ({ ...f, modelId: "", name: "", supportsAudio: false }));
+    setForm((f) => ({ ...f, modelId: "", name: "", supportsAudio: false, maxDurationSeconds: undefined }));
   };
 
   return (
@@ -153,12 +159,27 @@ export function GenerationSettings() {
             </div>
             <div className="space-y-1.5">
               <Label className="text-xs text-muted-foreground">{t("fieldModelId")}</Label>
-              <Input value={form.modelId} onChange={(e) => setForm((f) => ({ ...f, modelId: e.target.value }))} placeholder={t("modelIdPlaceholder")} className="font-mono text-xs" />
+              <Input value={form.modelId} onChange={(e) => setForm((f) => { const modelId = e.target.value; const inferredMax = /(?:hailuo-h3|minimax-h3)/i.test(modelId) ? 15 : undefined; return { ...f, modelId, maxDurationSeconds: f.maxDurationSeconds ?? inferredMax }; })} placeholder={t("modelIdPlaceholder")} className="font-mono text-xs" />
             </div>
             <div className="space-y-1.5">
               <Label className="text-xs text-muted-foreground">{t("fieldName")}</Label>
               <Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder={t("namePlaceholder")} className="text-xs" />
             </div>
+            {form.mediaType === "video" && (
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">{t("maxDurationSeconds")}</Label>
+                <Input
+                  type="number"
+                  min={4}
+                  max={120}
+                  step={1}
+                  value={form.maxDurationSeconds ?? ""}
+                  onChange={(e) => setForm((f) => ({ ...f, maxDurationSeconds: e.target.value === "" ? undefined : Number(e.target.value) }))}
+                  placeholder={t("maxDurationPlaceholder")}
+                  className="font-mono text-xs"
+                />
+              </div>
+            )}
           </div>
           <div className="flex items-center justify-between">
             {form.mediaType === "video" ? (
@@ -182,6 +203,7 @@ export function GenerationSettings() {
                     <p className="text-[11px] text-muted-foreground font-mono truncate">
                       {labelOf(PROVIDER_OPTIONS, m.provider)} · {m.mediaType === "image" ? t("mediaImage") : t("mediaVideo")} · {m.modelId}
                       {m.supportsAudio ? t("audioSuffix") : ""}
+                      {m.mediaType === "video" && m.maxDurationSeconds !== undefined ? ` · ≤${m.maxDurationSeconds}s` : ""}
                     </p>
                   </div>
                   <button onClick={() => removeCustomModel(m.id)} className="shrink-0 text-muted-foreground hover:text-destructive transition-colors" title={t("delete")}>

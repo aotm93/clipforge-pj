@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { useSettingsStore } from "@/lib/stores/settings-store";
 import { mergeCustomModels, buildImageOptions, buildVideoOptions, toEditVariant } from "@/lib/gen-params";
 import { resolveFilmModel } from "@/lib/storyboard-film";
+import { videoMaxSeconds } from "@/lib/video-duration";
 import { useCharacterStore } from "@/lib/stores/project-store";
 import type { Shot } from "@/lib/db/schema";
 import { buildAssetRows, shouldOfferStockFill, needsImageModelWarning, nextChainKeyframe, type AssetItem, chainByDefault } from "@/lib/assets-view";
@@ -71,6 +72,7 @@ interface ImageModelTarget {
   apiKey: string;
   baseUrl?: string;
   supportsAudio?: boolean;
+  maxDurationSeconds?: number;
 }
 
 // persisted cloud AI task row (from /api/ai/tasks, issue #16 recovery flow)
@@ -166,7 +168,7 @@ export default function AssetsPage() {
     const resolve = (type: "image" | "video", modelId: string) => {
       const model = mergeCustomModels(catalog.models.filter((item) => item.mediaType === type), customModels, type, names).find((item) => item.id === modelId);
       const provider = model && enabled.find((item) => item.name === model.provider);
-      return model && provider ? { provider: provider.name, model: modelId, apiKey: provider.apiKey, baseUrl: provider.baseUrl, supportsAudio: model.supportsAudio } : null;
+      return model && provider ? { provider: provider.name, model: modelId, apiKey: provider.apiKey, baseUrl: provider.baseUrl, supportsAudio: model.supportsAudio, maxDurationSeconds: model.maxDurationSeconds } : null;
     };
     return [resolve("image", defaultImageModel), resolve("video", defaultVideoModel)];
   }, [providers, customModels, defaultImageModel, defaultVideoModel, catalog.models]);
@@ -633,12 +635,12 @@ export default function AssetsPage() {
       // per-shot duration: the composer's slot follows the script duration (voice-fitted), and the
       // composer trims overshoot from the TAIL — which would cut a chained ending. Round to the
       // model's supported range instead of always sending the global 5s default.
-      const videoOptions = buildVideoOptions(videoParams);
+      const videoOptions = buildVideoOptions(videoParams, videoModelTarget.maxDurationSeconds);
       if (projectDirection.negativePrompt) {
         videoOptions.negativePrompt = [videoOptions.negativePrompt, projectDirection.negativePrompt].filter(Boolean).join(", ");
       }
       if (asset?.duration) {
-        videoOptions.duration = Math.min(15, Math.max(4, Math.round(asset.duration)));
+        videoOptions.duration = Math.min(videoMaxSeconds(videoModelTarget.model, videoModelTarget.maxDurationSeconds), Math.max(4, Math.round(asset.duration)));
       }
       if (controlPlan.audioMode === "native") {
         videoOptions.audioEnabled = true;
@@ -891,7 +893,7 @@ export default function AssetsPage() {
       const res = await fetch(`/api/project/${id}/storyboard-film`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scriptId, dryRun: true, model: videoModelTarget.model, baseUrl: videoModelTarget.baseUrl }),
+        body: JSON.stringify({ scriptId, dryRun: true, provider: videoModelTarget.provider, model: videoModelTarget.model, baseUrl: videoModelTarget.baseUrl, options: buildVideoOptions(videoParams ? { ...videoParams, aspectRatio: "9:16" } : undefined, videoModelTarget.maxDurationSeconds) }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || t("filmFailed"));
@@ -901,7 +903,7 @@ export default function AssetsPage() {
     } finally {
       setIsFilmGenerating(false);
     }
-  }, [id, scriptId, videoModelTarget, isFilmGenerating, t]);
+  }, [id, scriptId, videoModelTarget, videoParams, isFilmGenerating, t]);
 
   const runStoryboardFilm = useCallback(async () => {
     if (!videoModelTarget || !scriptId || isFilmGenerating) return;
@@ -915,14 +917,14 @@ export default function AssetsPage() {
           scriptId,
           provider: videoModelTarget.provider,
           // whatever the confirm card just priced — never re-derived, so what was shown is what bills
-          model: resolveFilmModel(videoModelTarget.model).model,
+          model: resolveFilmModel(videoModelTarget.model, videoModelTarget.provider).model,
           spendCapUsd,
           acknowledgeOverCap: true, // the card already required an explicit confirm on this estimate
           apiKey: videoModelTarget.apiKey,
           baseUrl: videoModelTarget.baseUrl,
           // presenter sheet leads reference_images as the identity anchor (@Image1)
           ...(presenterSheet && { characterSheetUrl: presenterSheet }),
-          options: buildVideoOptions(videoParams ? { ...videoParams, aspectRatio: "9:16" } : undefined),
+          options: buildVideoOptions(videoParams ? { ...videoParams, aspectRatio: "9:16" } : undefined, videoModelTarget.maxDurationSeconds),
         }),
       });
       const data = await res.json();
@@ -1116,9 +1118,9 @@ export default function AssetsPage() {
                 onChange={(e) => setPresenterId(e.target.value)}
                 className="bg-transparent text-xs outline-none h-6 max-w-28 text-foreground"
               >
-                <option value="">{t("presenterNone")}</option>
+                <option className="bg-popover text-popover-foreground" value="">{t("presenterNone")}</option>
                 {presenterLib.map((c) => (
-                  <option key={c.id} value={c.id}>
+                  <option className="bg-popover text-popover-foreground" key={c.id} value={c.id}>
                     {c.name}
                     {c.referenceImages?.[0] ? ` ${t("presenterSheetBadge")}` : ""}
                   </option>
@@ -1138,18 +1140,18 @@ export default function AssetsPage() {
               onChange={(e) => setVisualLook(e.target.value)}
               className="bg-transparent text-xs outline-none h-6 max-w-28 text-foreground"
             >
-              <option value="none">{t("lookNone")}</option>
+              <option className="bg-popover text-popover-foreground" value="none">{t("lookNone")}</option>
               {/* "real" family = raw phone-shot looks (UGC anti-AI-slop path); styled = art-directed */}
-              <optgroup label={locale === "zh" ? "实拍感" : "Real-shot"}>
+              <optgroup className="bg-popover text-popover-foreground" label={locale === "zh" ? "实拍感" : "Real-shot"}>
                 {LOOK_PRESETS.filter((p) => p.group === "real").map((p) => (
-                  <option key={p.id} value={p.id}>
+                  <option className="bg-popover text-popover-foreground" key={p.id} value={p.id}>
                     {locale === "zh" ? p.name.zh : p.name.en}
                   </option>
                 ))}
               </optgroup>
-              <optgroup label={locale === "zh" ? "风格化" : "Styled"}>
+              <optgroup className="bg-popover text-popover-foreground" label={locale === "zh" ? "风格化" : "Styled"}>
                 {LOOK_PRESETS.filter((p) => p.group !== "real").map((p) => (
-                  <option key={p.id} value={p.id}>
+                  <option className="bg-popover text-popover-foreground" key={p.id} value={p.id}>
                     {locale === "zh" ? p.name.zh : p.name.en}
                   </option>
                 ))}

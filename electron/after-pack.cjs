@@ -51,5 +51,24 @@ exports.default = async function afterPack(context) {
   }
   console.log("[afterPack] 依赖自检通过：@swc/helpers、styled-jsx 均可从 next 解析 ✓");
   prepareBundledMediaTools(resourcesDir, electronPlatformName, Arch[context.arch]);
+
+  // The server-external native package is loaded from .next/node_modules at runtime, not just the top-level copy.
+  // Check the exact binaries that will ship; otherwise startup can look healthy while every DB route is broken.
+  const tracedNativeDir = path.join(dest, ".next", "node_modules");
+  const tracedNativePackages = fs.existsSync(tracedNativeDir)
+    ? fs.readdirSync(tracedNativeDir).filter((name) => name.startsWith("better-sqlite3"))
+    : [];
+  const rootBindingPath = path.join(dest, "node_modules", "better-sqlite3", "build", "Release", "better_sqlite3.node");
+  if (!fs.existsSync(rootBindingPath) || tracedNativePackages.length === 0) {
+    throw new Error("[afterPack] standalone 缺少 better-sqlite3 原生模块或 Next traced 副本，打包中止");
+  }
+  const rootBinding = fs.readFileSync(rootBindingPath);
+  for (const name of tracedNativePackages) {
+    const tracedBindingPath = path.join(tracedNativeDir, name, "build", "Release", "better_sqlite3.node");
+    if (!fs.existsSync(tracedBindingPath) || !fs.readFileSync(tracedBindingPath).equals(rootBinding)) {
+      throw new Error(`[afterPack] ${name} 缺少匹配的 Electron ABI better-sqlite3 二进制，打包中止`);
+    }
+  }
+  console.log(`[afterPack] SQLite 原生模块自检通过（${tracedNativePackages.length} 份 traced 副本）✓`);
   console.log("[afterPack] ffmpeg / ffprobe 权限与运行自检通过 ✓");
 };

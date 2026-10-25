@@ -54,6 +54,12 @@ export function escapeSubtitlesPath(p: string): string {
   return p.replace(/\\/g, "/").replace(/:/g, "\\:").replace(/'/g, "\\'");
 }
 
+/** Escape a path used as an unquoted value in an FFmpeg filtergraph option (subtitles / fontsdir). */
+export function escapeSubtitlesFilterPath(p: string): string {
+  return `'${escapeSubtitlesPath(p).replace(/'/g, "'\\\\''")}'`;
+}
+
+
 /** drawtext filter options (text/fontFile are escaped internally, so new overlays can't miss escaping — an audit once caught a bug caused by using the wrong escaper for font paths) */
 export interface DrawtextOpts {
   fontFile?: string;

@@ -529,14 +529,20 @@ export default function ScriptPage() {
   /** Free dryRun call — full film prompt + counts + warnings, nothing submitted, nothing billed. */
   const fetchFilmPreview = async (scriptId: string) => {
     const presenter = presenterLib.find((c) => c.id === presenterParam);
+    const settings = useSettingsStore.getState();
+    const videoTarget = await resolveDefaultModelTarget(settings.providers, settings.defaultVideoModel, settings.customModels, "video");
+    const videoOptions = buildVideoOptions(settings.videoParams ? { ...settings.videoParams, aspectRatio: "9:16" } : undefined, videoTarget?.maxDurationSeconds);
     const res = await fetch(`/api/project/${id}/storyboard-film`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         scriptId,
         dryRun: true,
+        ...(videoTarget?.provider && { provider: videoTarget.provider }),
+        ...(videoTarget?.baseUrl && { baseUrl: videoTarget.baseUrl }),
+        options: videoOptions,
         // preview the CONFIGURED model: the route resolves it the same way the paid submit does,
         // so a forced switch shows up in the confirm card instead of only on the invoice (issue #28)
-        model: useSettingsStore.getState().defaultVideoModel,
+        model: videoTarget?.model ?? settings.defaultVideoModel,
         // a picked presenter WILL ride as a reference sheet (generated on demand later), so the
         // preview must count its slot now — the dryRun branch only reads truthiness
         ...(presenter && { characterSheetUrl: presenter.referenceImages?.[0] ?? "planned" }),
@@ -661,7 +667,7 @@ export default function ScriptPage() {
           apiKey: vidTarget.apiKey,
           baseUrl: vidTarget.baseUrl,
           ...(sheet && { characterSheetUrl: sheet }),
-          options: buildVideoOptions(s.videoParams ? { ...s.videoParams, aspectRatio: "9:16" } : undefined),
+          options: buildVideoOptions(s.videoParams ? { ...s.videoParams, aspectRatio: "9:16" } : undefined, vidTarget.maxDurationSeconds),
         }),
       });
       const filmData = await filmRes.json().catch(() => ({}));
